@@ -1,0 +1,19 @@
+[package]
+name = "quantum-engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+name = "quantum_engine"
+
+[dependencies]
+jni = { version = "0.21", features = ["invocation"] }
+ndk = "0.8"
+raw-window-handle = "0.6"
+ndk-context = "0.1"
+wgpu = { version = "0.19" }
+pollster = "0.3"
+bytemuck = "1.14"
+log = "0.4"
+env_logger = "0.10"
