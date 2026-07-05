@@ -236,7 +236,7 @@ dependencies {
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:label="Quantum Frames"
         android:theme="@style/Theme.Material3.Dark">
         <activity
