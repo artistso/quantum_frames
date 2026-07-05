@@ -25,7 +25,8 @@ class MainActivity : ComponentActivity() {
                     SurfaceView(context).apply {
                         holder.addCallback(object : SurfaceHolder.Callback {
                             override fun surfaceCreated(holder: SurfaceHolder) {
-                                Renderer.start(holder.surface)
+                                // Wait for surfaceChanged: the surface has no
+                                // valid size yet, and wgpu needs real dimensions.
                             }
                             override fun surfaceChanged(
                                 holder: SurfaceHolder,
@@ -33,7 +34,11 @@ class MainActivity : ComponentActivity() {
                                 width: Int,
                                 height: Int
                             ) {
-                                Renderer.resize(width, height)
+                                if (!Renderer.isStarted()) {
+                                    Renderer.start(holder.surface, width, height)
+                                } else {
+                                    Renderer.resize(width, height)
+                                }
                             }
                             override fun surfaceDestroyed(holder: SurfaceHolder) {
                                 Renderer.stop()

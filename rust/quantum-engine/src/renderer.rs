@@ -151,10 +151,24 @@ impl Renderer {
     }
 
     fn render(&mut self) {
-        let output = self
-            .surface
-            .get_current_texture()
-            .expect("Failed to get surface texture");
+        let output = match self.surface.get_current_texture() {
+            Ok(o) => o,
+            Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
+                // Reconfigure and retry once; skip the frame if it still fails.
+                self.surface.configure(&self.device, &self.config);
+                match self.surface.get_current_texture() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        log::warn!("skipping frame: {e:?}");
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("skipping frame: {e:?}");
+                return;
+            }
+        };
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
