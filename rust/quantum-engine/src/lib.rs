@@ -1,31 +1,69 @@
-use std::sync::Mutex;
-use jni::JNIEnv;
-use jni::objects::JObject;
-use jni::sys::{jlong, jint};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Instant;
+
+use jni::objects::JObject;
+use jni::sys::{jint, jlong};
+use jni::JNIEnv;
 
 mod renderer;
 
 struct Engine {
-    renderer: renderer::Renderer,
+    renderer: Arc<Mutex<renderer::Renderer>>,
+    running: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Engine {
     fn new(surface: *mut std::ffi::c_void, width: u32, height: u32) -> Self {
         let renderer = pollster::block_on(renderer::Renderer::new(surface, width, height));
-        Self { renderer }
+        let renderer = Arc::new(Mutex::new(renderer));
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Continuous render loop on a dedicated thread. PresentMode::Fifo
+        // blocks on vsync inside render(), so this naturally paces to the
+        // display refresh rate without busy-waiting.
+        let thread = {
+            let renderer = Arc::clone(&renderer);
+            let running = Arc::clone(&running);
+            Some(std::thread::spawn(move || {
+                let start = Instant::now();
+                while running.load(Ordering::Relaxed) {
+                    let t = start.elapsed().as_secs_f32();
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        renderer.lock().unwrap().render(t);
+                    }));
+                    if result.is_err() {
+                        log_err("render loop panicked; stopping");
+                        break;
+                    }
+                }
+            }))
+        };
+
+        Self {
+            renderer,
+            running,
+            thread,
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        self.renderer.resize(width, height);
+        self.renderer.lock().unwrap().resize(width, height);
     }
 
-    fn stop(self) {
-        // drop renderer, cleanup wgpu
+    fn stop(mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        // renderer dropped here, cleaning up wgpu resources
     }
 }
 
-struct EnginePtr(*mut Engine);
+struct EnginePtr(#[allow(dead_code)] *mut Engine);
 unsafe impl Send for EnginePtr {}
 unsafe impl Sync for EnginePtr {}
 
@@ -105,7 +143,9 @@ pub extern "system" fn Java_com_quantumframes_Renderer_nativeResize(
     width: jint,
     height: jint,
 ) {
-    if ptr == 0 { return; }
+    if ptr == 0 {
+        return;
+    }
     let result = catch_unwind(AssertUnwindSafe(|| {
         let engine = unsafe { &mut *(ptr as *mut Engine) };
         engine.resize(width as u32, height as u32);
@@ -121,12 +161,12 @@ pub extern "system" fn Java_com_quantumframes_Renderer_nativeStop(
     _class: JObject,
     ptr: jlong,
 ) {
-    if ptr == 0 { return; }
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        unsafe {
-            let engine = Box::from_raw(ptr as *mut Engine);
-            engine.stop();
-        }
+    if ptr == 0 {
+        return;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let engine = Box::from_raw(ptr as *mut Engine);
+        engine.stop();
     }));
     if result.is_err() {
         log_err("nativeStop panicked");

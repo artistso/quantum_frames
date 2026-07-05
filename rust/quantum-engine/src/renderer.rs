@@ -1,5 +1,13 @@
-use raw_window_handle::HasRawWindowHandle;
-use std::sync::Arc;
+use bytemuck::{Pod, Zeroable};
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct Uniforms {
+    time: f32,
+    _pad: f32,
+    width: f32,
+    height: f32,
+}
 
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -7,6 +15,8 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
 }
@@ -81,23 +91,107 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        // Shader module (simple purple triangle)
-        let shader_source = "
+        // ---- Uniforms (time + resolution) ----
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Uniforms BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Uniforms BG"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        // ---- "Quantum field" shader: full-screen effect driven by time ----
+        let shader_source = r#"
+            struct Uniforms {
+                time: f32,
+                _pad: f32,
+                width: f32,
+                height: f32,
+            };
+            @group(0) @binding(0) var<uniform> u: Uniforms;
+
+            struct VsOut {
+                @builtin(position) pos: vec4<f32>,
+            };
+
             @vertex
-            fn vs_main(@builtin(vertex_index) in_index: u32) -> @builtin(position) vec4<f32> {
-                var pos = array<vec2<f32>, 3>(
-                    vec2(0.0, 0.5),
-                    vec2(-0.5, -0.5),
-                    vec2(0.5, -0.5)
+            fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
+                // Full-screen triangle
+                var p = array<vec2<f32>, 3>(
+                    vec2(-1.0, -3.0),
+                    vec2( 3.0,  1.0),
+                    vec2(-1.0,  1.0)
                 );
-                return vec4<f32>(pos[in_index], 0.0, 1.0);
+                var out: VsOut;
+                out.pos = vec4<f32>(p[i], 0.0, 1.0);
+                return out;
             }
 
             @fragment
-            fn fs_main() -> @location(0) vec4<f32> {
-                return vec4<f32>(0.482, 0.184, 0.969, 1.0); // #7B2FF7
+            fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+                let res = vec2<f32>(u.width, u.height);
+                // Centered, aspect-corrected coords in ~[-1, 1]
+                let uv = (in.pos.xy * 2.0 - res) / min(res.x, res.y);
+                let t = u.time;
+
+                // Deep space background with a subtle vertical wash
+                var col = vec3<f32>(0.015, 0.01, 0.04) + 0.03 * vec3<f32>(0.3, 0.1, 0.5) * (1.0 - uv.y);
+
+                // --- Orbiting quantum "particles" (glowing points) ---
+                for (var k = 0; k < 6; k++) {
+                    let fk = f32(k);
+                    let ang = t * (0.35 + 0.12 * fk) + fk * 1.0471976; // staggered speeds
+                    let rad = 0.35 + 0.28 * sin(t * 0.4 + fk * 2.4);
+                    let p = vec2<f32>(cos(ang), sin(ang)) * rad;
+                    let d = length(uv - p);
+                    // Additive glow, hue shifts per particle
+                    let hue = 0.5 + 0.5 * sin(fk * 1.3 + t * 0.25);
+                    let pcol = mix(vec3<f32>(0.48, 0.18, 0.97), vec3<f32>(0.20, 0.65, 1.0), hue);
+                    col += pcol * 0.0045 / (d * d + 0.0015);
+                }
+
+                // --- Interference rings emanating from the center ---
+                let r = length(uv);
+                let wave = sin(r * 18.0 - t * 2.2) * 0.5 + 0.5;
+                let ring = wave * exp(-r * 1.8);
+                col += vec3<f32>(0.35, 0.12, 0.75) * ring * 0.35;
+
+                // --- Slow plasma shimmer over everything ---
+                let sh = sin(uv.x * 3.0 + t * 0.7) * sin(uv.y * 3.0 - t * 0.5);
+                col += vec3<f32>(0.10, 0.03, 0.22) * (sh * 0.5 + 0.5) * 0.25;
+
+                // Vignette
+                col *= 1.0 - 0.35 * smoothstep(0.6, 1.6, r);
+
+                // Soft tone map
+                col = col / (col + vec3<f32>(1.0));
+                col = pow(col, vec3<f32>(0.85));
+
+                return vec4<f32>(col, 1.0);
             }
-        ";
+        "#;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -106,12 +200,12 @@ impl Renderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Triangle"),
+            label: Some("QuantumField"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -136,21 +230,29 @@ impl Renderer {
             multiview: None,
         });
 
-        // Render first frame immediately
-        let mut slf = Self {
+        Self {
             surface,
             device,
             queue,
             config,
             render_pipeline,
-            width: initial_width,
-            height: initial_height,
-        };
-        slf.render();
-        slf
+            uniform_buffer,
+            bind_group,
+            width: initial_width.max(1),
+            height: initial_height.max(1),
+        }
     }
 
-    fn render(&mut self) {
+    pub fn render(&mut self, time: f32) {
+        let uniforms = Uniforms {
+            time,
+            _pad: 0.0,
+            width: self.width as f32,
+            height: self.height as f32,
+        };
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
         let output = match self.surface.get_current_texture() {
             Ok(o) => o,
             Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
@@ -185,9 +287,9 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.05,
-                            b: 0.1,
+                            r: 0.01,
+                            g: 0.01,
+                            b: 0.03,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -198,6 +300,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
+            rpass.set_bind_group(0, &self.bind_group, &[]);
             rpass.draw(0..3, 0..1);
         }
 
@@ -212,12 +315,6 @@ impl Renderer {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
-            self.render();
         }
-    }
-
-    pub fn stop(self) {
-        // Explicit drop to clean up GPU resources
-        drop(self);
     }
 }
