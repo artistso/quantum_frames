@@ -60,9 +60,9 @@ tasks.register<Exec>("buildRustRelease") {
     commandLine("cargo", "ndk",
         "-t", "arm64-v8a",
         "-t", "x86_64",
-        "--release",
         "-o", "${projectDir}/src/main/jniLibs",
-        "build"
+        "build",
+        "--release"
     )
 }
 afterEvaluate {
