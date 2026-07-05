@@ -10,7 +10,10 @@ Below is everything you need to get a running Android app with a **Rust-powered 
 
 ```bash
 # Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Security best practice: download the script, inspect it, and then execute it
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
+# Inspect rustup-init.sh if desired, then execute:
+sh rustup-init.sh
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
 
 # Install cargo-ndk
