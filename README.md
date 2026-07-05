@@ -109,10 +109,11 @@ pub extern "C" fn start_renderer(native_window: *mut c_void) -> *mut RendererHan
 }
 
 #[no_mangle]
-pub extern "C" fn stop_renderer(handle: *mut RendererHandle) {
+pub extern "C" fn stop_renderer(handle: *mut *mut RendererHandle) {
     unsafe {
-        if !handle.is_null() {
-            let _ = Box::from_raw(handle);
+        if !handle.is_null() && !(*handle).is_null() {
+            let _ = Box::from_raw(*handle);
+                *handle = std::ptr::null_mut();
         }
     }
 }
